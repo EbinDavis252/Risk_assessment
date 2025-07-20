@@ -1,20 +1,68 @@
+# app.py (Self-contained with in-code datasets)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import sqlite3
-import joblib
 import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
 from datetime import datetime
 
-# --------------------- Setup ---------------------
 st.set_page_config(page_title="Aqua Risk Intelligence System", layout="wide")
-
 DB_PATH = "aqua_risk.db"
 
-# --------------------- Database ---------------------
+# ---------------------------------------
+# Step 1: Create simulated datasets
+# ---------------------------------------
+@st.cache_data
+def load_simulated_data():
+    np.random.seed(42)
+    n = 500
+
+    farmer_df = pd.DataFrame({
+        "annual_income": np.random.randint(100000, 500000, size=n),
+        "loan_amount": np.random.randint(50000, 300000, size=n),
+        "credit_score": np.random.randint(300, 850, size=n),
+        "past_defaults": np.random.randint(0, 3, size=n),
+        "loan_default": np.random.choice([0, 1], size=n, p=[0.8, 0.2])
+    })
+
+    water_df = pd.DataFrame({
+        "temperature": np.random.normal(28, 2, size=n),
+        "pH": np.random.normal(7.5, 0.5, size=n),
+        "ammonia": np.random.exponential(0.2, size=n),
+        "dissolved_oxygen": np.random.normal(6, 1, size=n),
+        "turbidity": np.random.normal(15, 5, size=n)
+    })
+    water_df["farm_failure"] = ((water_df["ammonia"] > 0.5) |
+                                (water_df["dissolved_oxygen"] < 4) |
+                                (water_df["pH"] < 6.5) |
+                                (water_df["pH"] > 8.5)).astype(int)
+
+    return farmer_df, water_df
+
+farmer_df, water_df = load_simulated_data()
+
+# ---------------------------------------
+# Step 2: Train Models
+# ---------------------------------------
+@st.cache_resource
+def train_models(farmer_df, water_df):
+    X1 = farmer_df.drop("loan_default", axis=1)
+    y1 = farmer_df["loan_default"]
+    model1 = RandomForestClassifier().fit(X1, y1)
+
+    X2 = water_df.drop("farm_failure", axis=1)
+    y2 = water_df["farm_failure"]
+    model2 = RandomForestClassifier().fit(X2, y2)
+
+    return model1, model2
+
+loan_model, farm_model = train_models(farmer_df, water_df)
+
+# ---------------------------------------
+# Step 3: DB Setup
+# ---------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -52,32 +100,10 @@ def load_history():
     conn.close()
     return df
 
-# --------------------- ML Models ---------------------
-@st.cache_resource
-def train_models():
-    # Load datasets
-    farmer_df = pd.read_csv("farmer_profiles.csv")
-    water_df = pd.read_csv("water_quality.csv")
-
-    # Loan Default Model
-    X1 = farmer_df[["annual_income", "loan_amount", "credit_score", "past_defaults"]]
-    y1 = farmer_df["loan_default"]
-    X1_train, X1_test, y1_train, y1_test = train_test_split(X1, y1, test_size=0.2, random_state=42)
-    loan_model = RandomForestClassifier().fit(X1_train, y1_train)
-
-    # Farm Failure Model
-    X2 = water_df[["temperature", "pH", "ammonia", "dissolved_oxygen", "turbidity"]]
-    y2 = water_df["farm_failure"]
-    X2_train, X2_test, y2_train, y2_test = train_test_split(X2, y2, test_size=0.2, random_state=42)
-    farm_model = RandomForestClassifier().fit(X2_train, y2_train)
-
-    return loan_model, farm_model
-
-loan_model, farm_model = train_models()
-
-# --------------------- UI ---------------------
+# ---------------------------------------
+# Step 4: Streamlit UI
+# ---------------------------------------
 st.title("🌊 Aqua Risk Intelligence Dashboard")
-
 tab1, tab2, tab3 = st.tabs(["📝 Risk Assessment", "📊 Risk Summary", "🗃️ History"])
 
 with tab1:
@@ -139,13 +165,13 @@ with tab1:
 
 with tab2:
     st.header("📊 Summary")
-    st.info("This section can be expanded with graphs and trend analysis.")
+    st.info("This section can be enhanced with visualizations like charts and filters.")
 
 with tab3:
     st.header("🗃️ Prediction History")
     df = load_history()
     st.dataframe(df, use_container_width=True)
 
-# --------------------- INIT ---------------------
+# Initialize DB on first run
 if not os.path.exists(DB_PATH):
     init_db()
