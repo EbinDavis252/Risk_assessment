@@ -1,172 +1,196 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+import numpy as np
 import joblib
+import bcrypt
+import sqlite3
 from datetime import datetime
-import os
 
-# ---------- Setup ----------
-DB_PATH = 'database/aqua_finance.db'
-FIN_MODEL_PATH = 'models/financial_model.pkl'
-TECH_MODEL_PATH = 'models/failure_model.pkl'
+# ---------- DATABASE SETUP ----------
+conn = sqlite3.connect("database/users.db", check_same_thread=False)
+c = conn.cursor()
 
-os.makedirs('database', exist_ok=True)
-os.makedirs('data', exist_ok=True)
-os.makedirs('models', exist_ok=True)
-
-# ---------- Database Functions ----------
 def create_tables():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS farmer_profiles (
-            farmer_id INTEGER PRIMARY KEY,
-            name TEXT,
-            age INTEGER,
-            income REAL,
-            region TEXT,
-            credit_score INTEGER
-        );
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS water_quality (
-            farm_id INTEGER,
-            timestamp TEXT,
-            temperature REAL,
-            ph REAL,
-            ammonia REAL,
-            do REAL,
-            turbidity REAL
-        );
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS risk_results (
-            entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            farmer_id INTEGER,
-            risk_financial REAL,
-            risk_technical REAL,
-            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    password TEXT)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS farmer_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    name TEXT,
+                    income REAL,
+                    farm_size REAL,
+                    loan_amount REAL,
+                    region TEXT,
+                    prev_defaults INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS water_quality (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    ph REAL,
+                    temperature REAL,
+                    ammonia REAL,
+                    do_level REAL,
+                    turbidity REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS model_outputs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    risk_score_financial REAL,
+                    risk_score_technical REAL,
+                    risk_label TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
-    conn.close()
-
-def insert_risk_score(farmer_id, fin_score, tech_score):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO risk_results (farmer_id, risk_financial, risk_technical)
-        VALUES (?, ?, ?)
-    """, (farmer_id, fin_score, tech_score))
-    conn.commit()
-    conn.close()
 
 create_tables()
 
-# ---------- Load Models ----------
-@st.cache_resource
-def load_models():
-    fin_model = joblib.load(FIN_MODEL_PATH)
-    tech_model = joblib.load(TECH_MODEL_PATH)
-    return fin_model, tech_model
+# ---------- AUTH ----------
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
-if os.path.exists(FIN_MODEL_PATH) and os.path.exists(TECH_MODEL_PATH):
-    fin_model, tech_model = load_models()
-else:
-    st.warning("Please upload trained models to the 'models' folder.")
+def verify_password(password, hashed):
+    return bcrypt.checkpw(password.encode(), hashed)
 
-# ---------- Streamlit App ----------
-st.set_page_config(layout="wide")
+def register_user(username, password):
+    hashed_pw = hash_password(password)
+    try:
+        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
+        conn.commit()
+        return True
+    except:
+        return False
+
+def login_user(username, password):
+    c.execute("SELECT id, password FROM users WHERE username=?", (username,))
+    data = c.fetchone()
+    if data and verify_password(password, data[1]):
+        return data[0]  # return user_id
+    return None
+
+# ---------- MODELS ----------
+loan_model = joblib.load('ml_models/loan_model.pkl')
+failure_model = joblib.load('ml_models/failure_model.pkl')
+
+# ---------- APP ----------
+st.set_page_config(page_title="Aqua Risk Assessment", layout="wide")
 st.title("💧 AI-Driven Risk Assessment System for Aqua Loan Providers")
 
-tab1, tab2 = st.tabs(["📋 Manual Input", "📁 Upload CSV"])
+menu = ["Login", "Register"]
+choice = st.sidebar.selectbox("Menu", menu)
 
-# ----------------------------- TAB 1: MANUAL INPUT -----------------------------
-with tab1:
-    with st.form("manual_form"):
-        st.subheader("Farmer Profile")
-        farmer_id = st.number_input("Farmer ID", step=1)
-        name = st.text_input("Farmer Name")
-        age = st.slider("Age", 18, 70)
-        income = st.number_input("Annual Income (INR)", value=100000)
-        farm_size = st.number_input("Farm Size (in acres)", value=1.0)
-        loan_amount = st.number_input("Loan Amount", value=50000)
-        region = st.selectbox("Region", ["Andhra", "TamilNadu", "Odisha", "West Bengal"])
-        credit_score = st.slider("Credit Score", 300, 850)
-        loan_term = st.slider("Loan Tenure (months)", 6, 36)
-        previous_defaults = st.radio("Previous Defaults", [0, 1])
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
 
-        st.subheader("Water Quality")
-        temp = st.number_input("Temperature (°C)", 20.0, 35.0, 28.0)
-        ph = st.number_input("pH", 6.0, 9.0, 7.2)
-        ammonia = st.number_input("Ammonia (mg/L)", 0.0, 5.0, 0.5)
-        do = st.number_input("Dissolved Oxygen (mg/L)", 0.0, 10.0, 5.0)
-        turbidity = st.number_input("Turbidity (NTU)", 0.0, 10.0, 3.0)
-
-        submit_manual = st.form_submit_button("🔍 Assess Risk")
-
-    if submit_manual and 'fin_model' in globals():
-        # Prepare inputs
-        fin_features = [[age, income, farm_size, loan_amount, previous_defaults, credit_score, loan_term]]
-        tech_features = [[temp, ph, ammonia, do, turbidity]]
-
-        # Predict
-        fin_score = round(fin_model.predict_proba(fin_features)[0][1], 2)
-        tech_score = round(tech_model.predict_proba(tech_features)[0][1], 2)
-
-        # Show results
-        st.success(f"📊 Loan Default Risk: {fin_score*100:.1f}%")
-        st.warning(f"💧 Fish Farm Failure Risk: {tech_score*100:.1f}%")
-
-        # Save to DB
-        insert_risk_score(farmer_id, fin_score, tech_score)
-
-# ----------------------------- TAB 2: UPLOAD FILES -----------------------------
-with tab2:
-    st.subheader("Upload Aqua Loan Dataset & Water Quality Dataset")
-
-    loan_file = st.file_uploader("Upload aqua_loans.csv", type=["csv"])
-    water_file = st.file_uploader("Upload water_quality.csv", type=["csv"])
-
-    if loan_file:
-        loan_df = pd.read_csv(loan_file)
-        st.dataframe(loan_df.head())
-
-    if water_file:
-        water_df = pd.read_csv(water_file)
-        st.dataframe(water_df.head())
-
-    if st.button("🔍 Run Batch Risk Assessment") and 'fin_model' in globals():
-        if loan_file and water_file:
-            results = []
-
-            for i in range(min(len(loan_df), len(water_df))):
-                f = loan_df.iloc[i]
-                w = water_df.iloc[i]
-
-                fin_features = [[
-                    f['age'], f['income'], f['farm_size'], f['loan_amount'],
-                    f['previous_defaults'], f['credit_score'], f['loan_term_months']
-                ]]
-                tech_features = [[
-                    w['temperature'], w['ph'], w['ammonia'], w['do'], w['turbidity']
-                ]]
-
-                fin_score = round(fin_model.predict_proba(fin_features)[0][1], 2)
-                tech_score = round(tech_model.predict_proba(tech_features)[0][1], 2)
-
-                results.append({
-                    'farmer_id': f['farmer_id'],
-                    'Loan Default Risk (%)': fin_score * 100,
-                    'Farm Failure Risk (%)': tech_score * 100
-                })
-
-                insert_risk_score(f['farmer_id'], fin_score, tech_score)
-
-            result_df = pd.DataFrame(results)
-            st.success("✅ Batch Assessment Complete")
-            st.dataframe(result_df)
+if choice == "Register":
+    st.subheader("Create Account")
+    new_user = st.text_input("Username")
+    new_password = st.text_input("Password", type="password")
+    if st.button("Register"):
+        if register_user(new_user, new_password):
+            st.success("Account created. Go to Login.")
         else:
-            st.warning("Please upload both CSV files.")
+            st.error("Username already exists.")
 
-# ----------------------------- END -----------------------------
+elif choice == "Login":
+    st.subheader("Login to Your Account")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        user_id = login_user(username, password)
+        if user_id:
+            st.success(f"Welcome, {username}!")
+            st.session_state.user_id = user_id
+        else:
+            st.error("Invalid credentials")
+
+# ---------- MAIN APP AFTER LOGIN ----------
+if st.session_state.user_id:
+    tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload Data", "🔍 Predict Risk", "📈 View History", "ℹ️ About"])
+
+    with tab1:
+        st.header("Upload Farmer Loan Data")
+        loan_file = st.file_uploader("Upload CSV for Loan Data", type=["csv"], key="loan")
+        if loan_file:
+            df_loan = pd.read_csv(loan_file)
+            st.dataframe(df_loan)
+
+            for _, row in df_loan.iterrows():
+                c.execute('''INSERT INTO farmer_profiles (user_id, name, income, farm_size, loan_amount, region, prev_defaults)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                          (st.session_state.user_id, row['name'], row['income'], row['farm_size'],
+                           row['loan_amount'], row['region'], row['prev_defaults']))
+            conn.commit()
+            st.success("Loan data uploaded successfully.")
+
+        st.header("Upload Water Quality Data")
+        water_file = st.file_uploader("Upload CSV for Water Data", type=["csv"], key="water")
+        if water_file:
+            df_water = pd.read_csv(water_file)
+            st.dataframe(df_water)
+
+            for _, row in df_water.iterrows():
+                c.execute('''INSERT INTO water_quality (user_id, ph, temperature, ammonia, do_level, turbidity)
+                             VALUES (?, ?, ?, ?, ?, ?)''',
+                          (st.session_state.user_id, row['ph'], row['temperature'], row['ammonia'],
+                           row['do_level'], row['turbidity']))
+            conn.commit()
+            st.success("Water data uploaded successfully.")
+
+    with tab2:
+        st.header("Run Risk Predictions")
+
+        st.subheader("Latest Farmer Profile")
+        c.execute('''SELECT income, farm_size, loan_amount, prev_defaults 
+                     FROM farmer_profiles WHERE user_id=? ORDER BY id DESC LIMIT 1''', (st.session_state.user_id,))
+        row = c.fetchone()
+        if row:
+            input_financial = np.array(row).reshape(1, -1)
+            risk_score_fin = loan_model.predict_proba(input_financial)[0][1]
+        else:
+            risk_score_fin = None
+            st.warning("No loan data found.")
+
+        st.subheader("Latest Water Quality")
+        c.execute('''SELECT ph, temperature, ammonia, do_level, turbidity
+                     FROM water_quality WHERE user_id=? ORDER BY id DESC LIMIT 1''', (st.session_state.user_id,))
+        row = c.fetchone()
+        if row:
+            input_tech = np.array(row).reshape(1, -1)
+            risk_score_tech = failure_model.predict_proba(input_tech)[0][1]
+        else:
+            risk_score_tech = None
+            st.warning("No water data found.")
+
+        if risk_score_fin is not None and risk_score_tech is not None:
+            st.metric("📊 Financial Risk Score", f"{risk_score_fin:.2f}")
+            st.metric("🌊 Technical Risk Score", f"{risk_score_tech:.2f}")
+            risk_label = "High" if risk_score_fin > 0.6 or risk_score_tech > 0.6 else "Medium" if risk_score_fin > 0.4 else "Low"
+            st.success(f"Overall Risk Assessment: **{risk_label}**")
+
+            c.execute('''INSERT INTO model_outputs (user_id, risk_score_financial, risk_score_technical, risk_label)
+                         VALUES (?, ?, ?, ?)''',
+                      (st.session_state.user_id, risk_score_fin, risk_score_tech, risk_label))
+            conn.commit()
+        else:
+            st.info("Upload both loan and water data to generate prediction.")
+
+    with tab3:
+        st.header("Historical Predictions")
+        df = pd.read_sql_query('''SELECT * FROM model_outputs WHERE user_id=? ORDER BY created_at DESC''', conn,
+                               params=(st.session_state.user_id,))
+        st.dataframe(df)
+
+    with tab4:
+        st.markdown("""
+        ### About This Project
+        **AI-Driven Risk Assessment System for Aqua Loan Providers** combines machine learning models to assess both:
+        - 💼 Financial credit risk of fish farmers.
+        - 🌊 Technical failure risk of fish farms based on water quality.
+
+        Developed by Ebin Davis as part of MSc. Finance & Analytics internship at Grant Thornton Bharat LLP.
+        """)
+
