@@ -1,47 +1,56 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import sqlite3
-import hashlib
 import os
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 from datetime import datetime
+import hashlib
 
 st.set_page_config(page_title="Aqua Risk Intelligence System", layout="wide")
-DB_PATH = "aqua_risk.db"
 
-# ---------------------------------------
-# Step 1: Authentication Functions
-# ---------------------------------------
+# 🔁 Safe rerun workaround
+if st.session_state.get("page_refresh"):
+    st.session_state.page_refresh = False
+    st.experimental_rerun()
+
+DB_PATH = "aqua_risk.db"
+USER_DB = "users.db"
+
+# -------------------------
+# 🧠 Hashing for passwords
+# -------------------------
+def hash_pwd(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
+
 def create_user_table():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(USER_DB)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    password TEXT
-                )''')
+    c.execute("CREATE TABLE IF NOT EXISTS users(username TEXT, password TEXT)")
     conn.commit()
     conn.close()
 
-def add_user(username, password):
-    conn = sqlite3.connect(DB_PATH)
+def register_user(username, password):
+    conn = sqlite3.connect(USER_DB)
     c = conn.cursor()
-    hashed = hashlib.sha256(password.encode()).hexdigest()
-    c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
+    c.execute("INSERT INTO users VALUES (?,?)", (username, hash_pwd(password)))
     conn.commit()
     conn.close()
 
 def login_user(username, password):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(USER_DB)
     c = conn.cursor()
-    hashed = hashlib.sha256(password.encode()).hexdigest()
-    c.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, hashed))
-    result = c.fetchone()
+    c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, hash_pwd(password)))
+    data = c.fetchone()
     conn.close()
-    return result
+    return data
+
+create_user_table()
 
 # ---------------------------------------
-# Step 2: Simulated Data
+# Step 1: Create simulated datasets
 # ---------------------------------------
 @st.cache_data
 def load_simulated_data():
@@ -72,9 +81,11 @@ def load_simulated_data():
 
 farmer_df, water_df = load_simulated_data()
 
+# ---------------------------------------
+# Step 2: Train Models
+# ---------------------------------------
 @st.cache_resource
 def train_models(farmer_df, water_df):
-    from sklearn.model_selection import train_test_split
     X1 = farmer_df.drop("loan_default", axis=1)
     y1 = farmer_df["loan_default"]
     model1 = RandomForestClassifier().fit(X1, y1)
@@ -127,126 +138,106 @@ def load_history():
     conn.close()
     return df
 
+if not os.path.exists(DB_PATH):
+    init_db()
+
 # ---------------------------------------
-# Step 4: Authentication Gate
+# Step 4: Login + Register Page
 # ---------------------------------------
-create_user_table()
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.markdown(
-        """
-        <style>
-        .login-box {
-            width: 400px;
-            margin: auto;
-            margin-top: 100px;
-            padding: 2rem;
-            border-radius: 15px;
-            background-color: #f9f9f9;
-            box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
-        }
-        </style>
-        """, unsafe_allow_html=True)
+    st.title("🔐 Aqua Risk Intelligence - Login")
+    auth_tab = st.radio("Choose Action", ["Login", "Register"])
 
-    with st.container():
-        st.markdown('<div class="login-box">', unsafe_allow_html=True)
-        st.subheader("🔐 Login or Register to Continue")
-
-        auth_option = st.radio("Choose Action", ["Login", "Register"])
-
+    if auth_tab == "Login":
         user = st.text_input("Username")
         pwd = st.text_input("Password", type="password")
-        if auth_option == "Login":
-            if st.button("Login"):
-                if login_user(user, pwd):
-                    st.success("Login successful")
-                    st.session_state.authenticated = True
-                    st.experimental_rerun()
-                else:
-                    st.error("Invalid username or password")
-        else:
-            if st.button("Register"):
-                try:
-                    add_user(user, pwd)
-                    st.success("User registered. Please log in.")
-                except:
-                    st.warning("User already exists or error occurred.")
-        st.markdown('</div>', unsafe_allow_html=True)
-    st.stop()
+        if st.button("Login"):
+            if login_user(user, pwd):
+                st.success("Login successful. Redirecting...")
+                st.session_state.authenticated = True
+                st.session_state.page_refresh = True
+                st.stop()
+            else:
+                st.error("Invalid credentials.")
 
-# ---------------------------------------
-# Step 5: Main App UI (After Login)
-# ---------------------------------------
-st.title("🌊 Aqua Risk Intelligence Dashboard")
-tab1, tab2, tab3 = st.tabs(["📝 Risk Assessment", "📊 Risk Summary", "🗃️ History"])
+    elif auth_tab == "Register":
+        new_user = st.text_input("Create Username")
+        new_pwd = st.text_input("Create Password", type="password")
+        if st.button("Register"):
+            register_user(new_user, new_pwd)
+            st.success("User registered! Please login.")
+else:
+    # ------------------------------
+    # Step 5: Main App after Login
+    # ------------------------------
+    st.title("🌊 Aqua Risk Intelligence Dashboard")
+    tab1, tab2, tab3 = st.tabs(["📝 Risk Assessment", "📊 Risk Summary", "🗃️ History"])
 
-with tab1:
-    st.header("📝 Enter Farmer & Water Quality Details")
-    with st.form("input_form"):
-        col1, col2 = st.columns(2)
+    with tab1:
+        st.header("📝 Enter Farmer & Water Quality Details")
 
-        with col1:
-            name = st.text_input("Farmer Name")
-            age = st.slider("Age", 18, 70, 35)
-            region = st.selectbox("Region", ["Andhra Pradesh", "Tamil Nadu", "Odisha", "West Bengal", "Gujarat"])
-            income = st.number_input("Annual Income (INR)", 10000, 1000000, 250000)
-            loan_amt = st.number_input("Loan Amount (INR)", 10000, 500000, 150000)
-            credit_score = st.slider("Credit Score", 300, 850, 650)
-            past_defaults = st.selectbox("Past Loan Defaults", [0, 1, 2])
+        with st.form("input_form"):
+            col1, col2 = st.columns(2)
 
-        with col2:
-            temperature = st.number_input("Water Temperature (°C)", 20.0, 35.0, 28.0)
-            ph = st.number_input("pH Level", 4.0, 10.0, 7.5)
-            ammonia = st.number_input("Ammonia (mg/L)", 0.0, 2.0, 0.2)
-            do_level = st.number_input("Dissolved Oxygen (mg/L)", 0.0, 10.0, 6.0)
-            turbidity = st.number_input("Turbidity (NTU)", 0.0, 50.0, 15.0)
+            with col1:
+                name = st.text_input("Farmer Name")
+                age = st.slider("Age", 18, 70, 35)
+                region = st.selectbox("Region", ["Andhra Pradesh", "Tamil Nadu", "Odisha", "West Bengal", "Gujarat"])
+                income = st.number_input("Annual Income (INR)", 10000, 1000000, 250000)
+                loan_amt = st.number_input("Loan Amount (INR)", 10000, 500000, 150000)
+                credit_score = st.slider("Credit Score", 300, 850, 650)
+                past_defaults = st.selectbox("Past Loan Defaults", [0, 1, 2])
 
-        submit = st.form_submit_button("Evaluate Risk")
+            with col2:
+                temperature = st.number_input("Water Temperature (°C)", 20.0, 35.0, 28.0)
+                ph = st.number_input("pH Level", 4.0, 10.0, 7.5)
+                ammonia = st.number_input("Ammonia (mg/L)", 0.0, 2.0, 0.2)
+                do_level = st.number_input("Dissolved Oxygen (mg/L)", 0.0, 10.0, 6.0)
+                turbidity = st.number_input("Turbidity (NTU)", 0.0, 50.0, 15.0)
 
-    if submit:
-        fin_input = pd.DataFrame([[income, loan_amt, credit_score, past_defaults]],
-                                 columns=["annual_income", "loan_amount", "credit_score", "past_defaults"])
-        tech_input = pd.DataFrame([[temperature, ph, ammonia, do_level, turbidity]],
-                                  columns=["temperature", "pH", "ammonia", "dissolved_oxygen", "turbidity"])
+            submit = st.form_submit_button("Evaluate Risk")
 
-        fin_risk = loan_model.predict_proba(fin_input)[0][1]
-        tech_risk = farm_model.predict_proba(tech_input)[0][1]
+        if submit:
+            fin_input = pd.DataFrame([[income, loan_amt, credit_score, past_defaults]],
+                                     columns=["annual_income", "loan_amount", "credit_score", "past_defaults"])
+            tech_input = pd.DataFrame([[temperature, ph, ammonia, do_level, turbidity]],
+                                      columns=["temperature", "pH", "ammonia", "dissolved_oxygen", "turbidity"])
 
-        st.success("✔️ Risk Evaluation Complete")
-        st.metric("💰 Financial Risk (Loan Default)", f"{fin_risk:.2%}")
-        st.metric("🐟 Technical Risk (Farm Failure)", f"{tech_risk:.2%}")
+            fin_risk = loan_model.predict_proba(fin_input)[0][1]
+            tech_risk = farm_model.predict_proba(tech_input)[0][1]
 
-        result = {
-            "name": name,
-            "age": age,
-            "region": region,
-            "income": income,
-            "loan_amount": loan_amt,
-            "credit_score": credit_score,
-            "past_defaults": past_defaults,
-            "temperature": temperature,
-            "pH": ph,
-            "ammonia": ammonia,
-            "do_level": do_level,
-            "turbidity": turbidity,
-            "financial_risk": round(fin_risk, 4),
-            "technical_risk": round(tech_risk, 4),
-            "result_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+            st.success("✔️ Risk Evaluation Complete")
+            st.metric("💰 Financial Risk (Loan Default)", f"{fin_risk:.2%}")
+            st.metric("🐟 Technical Risk (Farm Failure)", f"{tech_risk:.2%}")
 
-        save_result(result)
+            result = {
+                "name": name,
+                "age": age,
+                "region": region,
+                "income": income,
+                "loan_amount": loan_amt,
+                "credit_score": credit_score,
+                "past_defaults": past_defaults,
+                "temperature": temperature,
+                "pH": ph,
+                "ammonia": ammonia,
+                "do_level": do_level,
+                "turbidity": turbidity,
+                "financial_risk": round(fin_risk, 4),
+                "technical_risk": round(tech_risk, 4),
+                "result_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
 
-with tab2:
-    st.header("📊 Summary")
-    st.info("This section can be enhanced with visualizations like charts and filters.")
+            save_result(result)
 
-with tab3:
-    st.header("🗃️ Prediction History")
-    df = load_history()
-    st.dataframe(df, use_container_width=True)
+    with tab2:
+        st.header("📊 Summary")
+        st.info("This section can be enhanced with visualizations like charts and filters.")
 
-# DB init
-if not os.path.exists(DB_PATH):
-    init_db()
+    with tab3:
+        st.header("🗃️ Prediction History")
+        df = load_history()
+        st.dataframe(df, use_container_width=True)
