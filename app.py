@@ -1,18 +1,47 @@
-# app.py (Self-contained with in-code datasets)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import sqlite3
+import hashlib
 import os
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
 from datetime import datetime
 
 st.set_page_config(page_title="Aqua Risk Intelligence System", layout="wide")
 DB_PATH = "aqua_risk.db"
 
 # ---------------------------------------
-# Step 1: Create simulated datasets
+# Step 1: Authentication Functions
+# ---------------------------------------
+def create_user_table():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    password TEXT
+                )''')
+    conn.commit()
+    conn.close()
+
+def add_user(username, password):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
+    conn.commit()
+    conn.close()
+
+def login_user(username, password):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    c.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, hashed))
+    result = c.fetchone()
+    conn.close()
+    return result
+
+# ---------------------------------------
+# Step 2: Simulated Data
 # ---------------------------------------
 @st.cache_data
 def load_simulated_data():
@@ -43,11 +72,9 @@ def load_simulated_data():
 
 farmer_df, water_df = load_simulated_data()
 
-# ---------------------------------------
-# Step 2: Train Models
-# ---------------------------------------
 @st.cache_resource
 def train_models(farmer_df, water_df):
+    from sklearn.model_selection import train_test_split
     X1 = farmer_df.drop("loan_default", axis=1)
     y1 = farmer_df["loan_default"]
     model1 = RandomForestClassifier().fit(X1, y1)
@@ -101,14 +128,62 @@ def load_history():
     return df
 
 # ---------------------------------------
-# Step 4: Streamlit UI
+# Step 4: Authentication Gate
+# ---------------------------------------
+create_user_table()
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.markdown(
+        """
+        <style>
+        .login-box {
+            width: 400px;
+            margin: auto;
+            margin-top: 100px;
+            padding: 2rem;
+            border-radius: 15px;
+            background-color: #f9f9f9;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown('<div class="login-box">', unsafe_allow_html=True)
+        st.subheader("🔐 Login or Register to Continue")
+
+        auth_option = st.radio("Choose Action", ["Login", "Register"])
+
+        user = st.text_input("Username")
+        pwd = st.text_input("Password", type="password")
+        if auth_option == "Login":
+            if st.button("Login"):
+                if login_user(user, pwd):
+                    st.success("Login successful")
+                    st.session_state.authenticated = True
+                    st.experimental_rerun()
+                else:
+                    st.error("Invalid username or password")
+        else:
+            if st.button("Register"):
+                try:
+                    add_user(user, pwd)
+                    st.success("User registered. Please log in.")
+                except:
+                    st.warning("User already exists or error occurred.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.stop()
+
+# ---------------------------------------
+# Step 5: Main App UI (After Login)
 # ---------------------------------------
 st.title("🌊 Aqua Risk Intelligence Dashboard")
 tab1, tab2, tab3 = st.tabs(["📝 Risk Assessment", "📊 Risk Summary", "🗃️ History"])
 
 with tab1:
     st.header("📝 Enter Farmer & Water Quality Details")
-
     with st.form("input_form"):
         col1, col2 = st.columns(2)
 
@@ -172,6 +247,6 @@ with tab3:
     df = load_history()
     st.dataframe(df, use_container_width=True)
 
-# Initialize DB on first run
+# DB init
 if not os.path.exists(DB_PATH):
     init_db()
