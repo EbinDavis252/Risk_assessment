@@ -4,180 +4,126 @@ import numpy as np
 import sqlite3
 import hashlib
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 
-st.set_page_config(page_title="Aqua Risk Intelligence", layout="wide")
-
-# ----------------------- DATABASE FUNCTIONS -----------------------
-conn = sqlite3.connect('users.db', check_same_thread=False)
-c = conn.cursor()
-
+# ------------------- AUTH SECTION -------------------
 def create_usertable():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
     c.execute('CREATE TABLE IF NOT EXISTS userstable(username TEXT, password TEXT)')
+    conn.commit()
+    conn.close()
 
 def add_userdata(username, password):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
     c.execute('INSERT INTO userstable(username,password) VALUES (?,?)', (username, password))
     conn.commit()
+    conn.close()
 
 def login_user(username, password):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
     c.execute('SELECT * FROM userstable WHERE username =? AND password = ?', (username, password))
-    return c.fetchall()
+    data = c.fetchall()
+    conn.close()
+    return data
 
-def make_hashes(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-def check_hashes(password, hashed_text):
-    return hashed_text == hashlib.sha256(str.encode(password)).hexdigest()
-
-create_usertable()
-
-# ----------------------- MODEL TRAINING FUNCTION -----------------------
-@st.cache_resource
+# ------------------ MODEL TRAINING ------------------
+@st.cache_data
 def train_models(farmer_df, water_df):
-    # Farmer Loan Default Model
-    farmer_df = farmer_df.dropna()
-    if 'loan_default' not in farmer_df.columns:
-        raise ValueError("Missing 'loan_default' in farmer data.")
-    X1 = farmer_df.select_dtypes(include=['number']).drop("loan_default", axis=1)
-    y1 = farmer_df["loan_default"]
-    if X1.empty or y1.empty:
-        raise ValueError("Invalid farmer dataset for training.")
+    # AquaLoan Default Prediction
+    loan_features = ['credit_score', 'loan_amount', 'loan_tenure', 'past_defaults']
+    loan_target = 'default'
+    X1 = farmer_df[loan_features]
+    y1 = farmer_df[loan_target]
     loan_model = RandomForestClassifier().fit(X1, y1)
 
-    # Fish Farm Failure Model
-    water_df = water_df.dropna()
-    if 'farm_failure' not in water_df.columns:
-        raise ValueError("Missing 'farm_failure' in water quality data.")
-    X2 = water_df.select_dtypes(include=['number']).drop("farm_failure", axis=1)
-    y2 = water_df["farm_failure"]
-    if X2.empty or y2.empty:
-        raise ValueError("Invalid water quality dataset for training.")
+    # Fish Farm Failure Prediction
+    farm_features = ['temperature', 'ph', 'ammonia', 'dissolved_oxygen']
+    farm_target = 'failure'
+    X2 = water_df[farm_features]
+    y2 = water_df[farm_target]
     farm_model = RandomForestClassifier().fit(X2, y2)
 
     return loan_model, farm_model
 
-# ----------------------- MAIN APP -----------------------
-def main_app():
-    st.title("💧 Aqua Risk Intelligence Platform")
-    st.markdown("An integrated system to **predict loan defaults** and **fish farm failures** for Aqua Finance companies in India.")
+# ------------------- MAIN APP -------------------
+def main():
+    st.set_page_config(page_title="AquaRisk AI", layout="wide")
+    st.title("💧 Aqua Finance Risk Assessment & Early Warning System")
 
-    # --- Upload Datasets ---
-    st.sidebar.subheader("📁 Upload Datasets (Optional)")
-
-    uploaded_farmer = st.sidebar.file_uploader("Upload Farmer Profile CSV", type=["csv"])
-    uploaded_water = st.sidebar.file_uploader("Upload Water Quality CSV", type=["csv"])
-
-    if uploaded_farmer and uploaded_water:
-        farmer_df = pd.read_csv(uploaded_farmer)
-        water_df = pd.read_csv(uploaded_water)
-        st.success("✅ Uploaded both datasets successfully.")
-    else:
-        st.sidebar.warning("⚠️ You can enter data manually if no CSVs are uploaded.")
-        
-        # Manual Entry - Farmer
-        st.subheader("📋 Enter Sample Farmer Profile")
-        col1, col2 = st.columns(2)
-        with col1:
-            age = st.number_input("Age", min_value=18, max_value=100, value=35)
-            income = st.number_input("Annual Income (₹)", value=200000)
-            credit_score = st.number_input("Credit Score", value=700)
-        with col2:
-            loan_amount = st.number_input("Loan Amount (₹)", value=100000)
-            num_loans = st.number_input("Number of Active Loans", value=1)
-            past_default = st.selectbox("Past Loan Default?", [0, 1])
-
-        farmer_df = pd.DataFrame([{
-            'age': age,
-            'income': income,
-            'credit_score': credit_score,
-            'loan_amount': loan_amount,
-            'num_loans': num_loans,
-            'past_default': past_default,
-            'loan_default': 0  # Dummy label
-        }])
-
-        # Manual Entry - Water
-        st.subheader("🌊 Enter Sample Water Quality")
-        col3, col4 = st.columns(2)
-        with col3:
-            temperature = st.number_input("Temperature (°C)", value=28.0)
-            pH = st.number_input("pH Level", value=7.5)
-        with col4:
-            ammonia = st.number_input("Ammonia Level (ppm)", value=0.02)
-            dissolved_oxygen = st.number_input("Dissolved Oxygen (mg/L)", value=6.5)
-
-        water_df = pd.DataFrame([{
-            'temperature': temperature,
-            'pH': pH,
-            'ammonia': ammonia,
-            'dissolved_oxygen': dissolved_oxygen,
-            'farm_failure': 0  # Dummy label
-        }])
-
-    # Show Data Preview
-    with st.expander("📄 Preview Farmer Profile Data"):
-        st.dataframe(farmer_df)
-    with st.expander("📄 Preview Water Quality Data"):
-        st.dataframe(water_df)
-
-    # Train & Predict
-    try:
-        loan_model, farm_model = train_models(farmer_df, water_df)
-
-        st.success("✅ Models trained successfully!")
-
-        # Predictions
-        st.subheader("🔍 Prediction Results")
-
-        if 'loan_default' in farmer_df.columns:
-            X_pred1 = farmer_df.drop("loan_default", axis=1)
-        else:
-            X_pred1 = farmer_df
-
-        if 'farm_failure' in water_df.columns:
-            X_pred2 = water_df.drop("farm_failure", axis=1)
-        else:
-            X_pred2 = water_df
-
-        loan_prediction = loan_model.predict(X_pred1)[0]
-        farm_prediction = farm_model.predict(X_pred2)[0]
-
-        colA, colB = st.columns(2)
-        with colA:
-            st.metric("💸 Loan Default Risk", "High" if loan_prediction else "Low")
-        with colB:
-            st.metric("🐟 Farm Failure Risk", "High" if farm_prediction else "Low")
-
-    except Exception as e:
-        st.error(f"❌ Model training/prediction failed: {e}")
-
-# ----------------------- LOGIN UI -----------------------
-def login_page():
-    st.title("🔐 AquaRisk Login")
     menu = ["Login", "Register"]
-    choice = st.selectbox("Choose", menu)
+    choice = st.sidebar.selectbox("Access Panel", menu)
 
-    if choice == "Login":
+    create_usertable()
+
+    if choice == "Register":
+        st.subheader("Create a New Account")
+        new_user = st.text_input("Username")
+        new_password = st.text_input("Password", type='password')
+        if st.button("Register"):
+            if new_user and new_password:
+                add_userdata(new_user, hash_password(new_password))
+                st.success("Registration successful. Please login.")
+            else:
+                st.warning("Please fill both fields.")
+
+    elif choice == "Login":
         st.subheader("Login to Access Dashboard")
         username = st.text_input("Username")
         password = st.text_input("Password", type='password')
         if st.button("Login"):
-            hashed_pwd = make_hashes(password)
-            result = login_user(username, check_hashes(password, hashed_pwd))
-            if result:
-                st.success(f"Welcome {username}")
-                main_app()
+            if login_user(username, hash_password(password)):
+                st.success(f"Welcome, {username} 👋")
+
+                # ----- Upload datasets -----
+                st.subheader("Upload Datasets")
+                col1, col2 = st.columns(2)
+                with col1:
+                    farmer_file = st.file_uploader("Upload Farmer Profiles CSV", type=["csv"])
+                with col2:
+                    water_file = st.file_uploader("Upload Water Quality CSV", type=["csv"])
+
+                if farmer_file is not None and water_file is not None:
+                    farmer_df = pd.read_csv(farmer_file)
+                    water_df = pd.read_csv(water_file)
+
+                    st.success("✅ Files uploaded successfully.")
+                    st.write("Farmer Data", farmer_df.head())
+                    st.write("Water Data", water_df.head())
+
+                    loan_model, farm_model = train_models(farmer_df, water_df)
+
+                    # ----- Predictions -----
+                    st.subheader("📊 Make Predictions")
+
+                    st.markdown("### Predict Loan Default")
+                    credit_score = st.slider("Credit Score", 300, 900, 650)
+                    loan_amount = st.number_input("Loan Amount", 1000, 100000)
+                    loan_tenure = st.slider("Tenure (months)", 6, 60, 12)
+                    past_defaults = st.number_input("Past Defaults", 0, 10)
+                    pred1 = loan_model.predict([[credit_score, loan_amount, loan_tenure, past_defaults]])[0]
+                    st.success("🔴 Default Risk" if pred1 else "🟢 Low Risk")
+
+                    st.markdown("---")
+                    st.markdown("### Predict Fish Farm Failure")
+                    temp = st.slider("Temperature (°C)", 20.0, 35.0, 27.5)
+                    ph = st.slider("pH Level", 5.0, 9.0, 7.0)
+                    ammonia = st.slider("Ammonia (ppm)", 0.0, 5.0, 1.0)
+                    do = st.slider("Dissolved Oxygen (mg/L)", 2.0, 10.0, 6.5)
+                    pred2 = farm_model.predict([[temp, ph, ammonia, do]])[0]
+                    st.success("🔴 Farm at Risk" if pred2 else "🟢 Conditions Safe")
+
+                else:
+                    st.warning("Please upload both datasets to proceed.")
+
             else:
                 st.error("Invalid Username or Password")
 
-    elif choice == "Register":
-        st.subheader("Create New Account")
-        new_user = st.text_input("Username")
-        new_pwd = st.text_input("Password", type='password')
-        if st.button("Register"):
-            add_userdata(new_user, make_hashes(new_pwd))
-            st.success("You have successfully created an account.")
-            st.info("Go to Login to continue.")
-
-# ----------------------- RUN APP -----------------------
 if __name__ == '__main__':
-    login_page()
+    main()
