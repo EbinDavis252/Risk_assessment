@@ -1,143 +1,172 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import sqlite3
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+import joblib
+from datetime import datetime
+import os
 
-# Database setup
-def init_db():
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    password TEXT NOT NULL
-                )''')
+# ---------- Setup ----------
+DB_PATH = 'database/aqua_finance.db'
+FIN_MODEL_PATH = 'models/financial_model.pkl'
+TECH_MODEL_PATH = 'models/failure_model.pkl'
+
+os.makedirs('database', exist_ok=True)
+os.makedirs('data', exist_ok=True)
+os.makedirs('models', exist_ok=True)
+
+# ---------- Database Functions ----------
+def create_tables():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS farmer_profiles (
+            farmer_id INTEGER PRIMARY KEY,
+            name TEXT,
+            age INTEGER,
+            income REAL,
+            region TEXT,
+            credit_score INTEGER
+        );
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS water_quality (
+            farm_id INTEGER,
+            timestamp TEXT,
+            temperature REAL,
+            ph REAL,
+            ammonia REAL,
+            do REAL,
+            turbidity REAL
+        );
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS risk_results (
+            entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            farmer_id INTEGER,
+            risk_financial REAL,
+            risk_technical REAL,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
     conn.commit()
     conn.close()
 
-# Register page
-def register():
-    st.subheader("Register")
-    new_user = st.text_input("Username", key="reg_user")
-    new_pass = st.text_input("Password", type='password', key="reg_pass")
-    if st.button("Register"):
-        conn = sqlite3.connect("users.db")
-        c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)", (new_user, new_pass))
-        conn.commit()
-        conn.close()
-        st.success("Registered Successfully. Please login.")
+def insert_risk_score(farmer_id, fin_score, tech_score):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO risk_results (farmer_id, risk_financial, risk_technical)
+        VALUES (?, ?, ?)
+    """, (farmer_id, fin_score, tech_score))
+    conn.commit()
+    conn.close()
 
-# Login page
-def login():
-    st.subheader("Login to Access Dashboard")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        conn = sqlite3.connect("users.db")
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
-        if c.fetchone():
-            st.success("Login successful!")
-            st.session_state.logged_in = True
-        else:
-            st.error("Invalid Username or Password")
-        conn.close()
+create_tables()
 
-# Model training function
-@st.cache_data
-def train_models(farmer_df, water_df):
-    # Loan Default Model
-    if 'LoanDefault' not in farmer_df.columns:
-        raise ValueError("Farmer data must contain 'LoanDefault' column")
-    X1 = farmer_df.drop('LoanDefault', axis=1)
-    y1 = farmer_df['LoanDefault']
-    model1 = RandomForestClassifier()
-    model1.fit(X1, y1)
+# ---------- Load Models ----------
+@st.cache_resource
+def load_models():
+    fin_model = joblib.load(FIN_MODEL_PATH)
+    tech_model = joblib.load(TECH_MODEL_PATH)
+    return fin_model, tech_model
 
-    # Farm Failure Model
-    if 'Failure' not in water_df.columns:
-        raise ValueError("Water data must contain 'Failure' column")
-    X2 = water_df.drop('Failure', axis=1)
-    y2 = water_df['Failure']
-    model2 = RandomForestClassifier()
-    model2.fit(X2, y2)
+if os.path.exists(FIN_MODEL_PATH) and os.path.exists(TECH_MODEL_PATH):
+    fin_model, tech_model = load_models()
+else:
+    st.warning("Please upload trained models to the 'models' folder.")
 
-    return model1, model2
+# ---------- Streamlit App ----------
+st.set_page_config(layout="wide")
+st.title("💧 AI-Driven Risk Assessment System for Aqua Loan Providers")
 
-# Dashboard UI
-def show_dashboard():
-    st.subheader("Upload Data or Enter Manually")
+tab1, tab2 = st.tabs(["📋 Manual Input", "📁 Upload CSV"])
 
-    # Uploading files
-    farmer_file = st.file_uploader("Upload Farmer Profiles CSV", type=["csv"], key="farmer")
-    water_file = st.file_uploader("Upload Water Quality CSV", type=["csv"], key="water")
+# ----------------------------- TAB 1: MANUAL INPUT -----------------------------
+with tab1:
+    with st.form("manual_form"):
+        st.subheader("Farmer Profile")
+        farmer_id = st.number_input("Farmer ID", step=1)
+        name = st.text_input("Farmer Name")
+        age = st.slider("Age", 18, 70)
+        income = st.number_input("Annual Income (INR)", value=100000)
+        farm_size = st.number_input("Farm Size (in acres)", value=1.0)
+        loan_amount = st.number_input("Loan Amount", value=50000)
+        region = st.selectbox("Region", ["Andhra", "TamilNadu", "Odisha", "West Bengal"])
+        credit_score = st.slider("Credit Score", 300, 850)
+        loan_term = st.slider("Loan Tenure (months)", 6, 36)
+        previous_defaults = st.radio("Previous Defaults", [0, 1])
 
-    if farmer_file is not None and water_file is not None:
-        farmer_df = pd.read_csv(farmer_file)
+        st.subheader("Water Quality")
+        temp = st.number_input("Temperature (°C)", 20.0, 35.0, 28.0)
+        ph = st.number_input("pH", 6.0, 9.0, 7.2)
+        ammonia = st.number_input("Ammonia (mg/L)", 0.0, 5.0, 0.5)
+        do = st.number_input("Dissolved Oxygen (mg/L)", 0.0, 10.0, 5.0)
+        turbidity = st.number_input("Turbidity (NTU)", 0.0, 10.0, 3.0)
+
+        submit_manual = st.form_submit_button("🔍 Assess Risk")
+
+    if submit_manual and 'fin_model' in globals():
+        # Prepare inputs
+        fin_features = [[age, income, farm_size, loan_amount, previous_defaults, credit_score, loan_term]]
+        tech_features = [[temp, ph, ammonia, do, turbidity]]
+
+        # Predict
+        fin_score = round(fin_model.predict_proba(fin_features)[0][1], 2)
+        tech_score = round(tech_model.predict_proba(tech_features)[0][1], 2)
+
+        # Show results
+        st.success(f"📊 Loan Default Risk: {fin_score*100:.1f}%")
+        st.warning(f"💧 Fish Farm Failure Risk: {tech_score*100:.1f}%")
+
+        # Save to DB
+        insert_risk_score(farmer_id, fin_score, tech_score)
+
+# ----------------------------- TAB 2: UPLOAD FILES -----------------------------
+with tab2:
+    st.subheader("Upload Aqua Loan Dataset & Water Quality Dataset")
+
+    loan_file = st.file_uploader("Upload aqua_loans.csv", type=["csv"])
+    water_file = st.file_uploader("Upload water_quality.csv", type=["csv"])
+
+    if loan_file:
+        loan_df = pd.read_csv(loan_file)
+        st.dataframe(loan_df.head())
+
+    if water_file:
         water_df = pd.read_csv(water_file)
-    else:
-        st.write("Or Enter Data Manually")
-        farmer_data = {
-            'Age': st.number_input("Age", 18, 80),
-            'LoanAmount': st.number_input("Loan Amount", 0),
-            'CreditScore': st.slider("Credit Score", 300, 900),
-            'LoanDefault': st.selectbox("Loan Default", [0, 1])
-        }
-        water_data = {
-            'Temperature': st.slider("Temperature", 20.0, 35.0),
-            'pH': st.slider("pH", 5.0, 9.0),
-            'DissolvedOxygen': st.slider("Dissolved Oxygen", 3.0, 10.0),
-            'Ammonia': st.slider("Ammonia", 0.0, 5.0),
-            'Failure': st.selectbox("Farm Failure", [0, 1])
-        }
-        farmer_df = pd.DataFrame([farmer_data])
-        water_df = pd.DataFrame([water_data])
+        st.dataframe(water_df.head())
 
-    st.success("Data Loaded Successfully")
-    st.write("Farmer Data", farmer_df.head())
-    st.write("Water Data", water_df.head())
+    if st.button("🔍 Run Batch Risk Assessment") and 'fin_model' in globals():
+        if loan_file and water_file:
+            results = []
 
-    # Train and predict
-    try:
-        loan_model, farm_model = train_models(farmer_df, water_df)
+            for i in range(min(len(loan_df), len(water_df))):
+                f = loan_df.iloc[i]
+                w = water_df.iloc[i]
 
-        # Predictions
-        loan_preds = loan_model.predict(farmer_df.drop('LoanDefault', axis=1))
-        farm_preds = farm_model.predict(water_df.drop('Failure', axis=1))
+                fin_features = [[
+                    f['age'], f['income'], f['farm_size'], f['loan_amount'],
+                    f['previous_defaults'], f['credit_score'], f['loan_term_months']
+                ]]
+                tech_features = [[
+                    w['temperature'], w['ph'], w['ammonia'], w['do'], w['turbidity']
+                ]]
 
-        st.subheader("Loan Default Prediction")
-        st.write(pd.DataFrame({'Actual': farmer_df['LoanDefault'], 'Predicted': loan_preds}))
-        st.text(f"Accuracy: {accuracy_score(farmer_df['LoanDefault'], loan_preds)*100:.2f}%")
+                fin_score = round(fin_model.predict_proba(fin_features)[0][1], 2)
+                tech_score = round(tech_model.predict_proba(tech_features)[0][1], 2)
 
-        st.subheader("Farm Failure Prediction")
-        st.write(pd.DataFrame({'Actual': water_df['Failure'], 'Predicted': farm_preds}))
-        st.text(f"Accuracy: {accuracy_score(water_df['Failure'], farm_preds)*100:.2f}%")
-    except Exception as e:
-        st.error(f"Model Training Error: {e}")
+                results.append({
+                    'farmer_id': f['farmer_id'],
+                    'Loan Default Risk (%)': fin_score * 100,
+                    'Farm Failure Risk (%)': tech_score * 100
+                })
 
-# Main function
-def main():
-    st.set_page_config(page_title="Aqua Finance Risk App", layout="centered")
-    st.title("Aqua Finance Risk Management Dashboard")
+                insert_risk_score(f['farmer_id'], fin_score, tech_score)
 
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-
-    menu = ["Login", "Register"]
-    choice = st.sidebar.selectbox("Menu", menu)
-
-    if not st.session_state.logged_in:
-        if choice == "Login":
-            login()
+            result_df = pd.DataFrame(results)
+            st.success("✅ Batch Assessment Complete")
+            st.dataframe(result_df)
         else:
-            register()
-    else:
-        show_dashboard()
+            st.warning("Please upload both CSV files.")
 
-# Run the app
-if __name__ == "__main__":
-    init_db()
-    main()
+# ----------------------------- END -----------------------------
