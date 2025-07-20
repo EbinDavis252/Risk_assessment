@@ -1,30 +1,66 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import sqlite3
 import os
 from sklearn.ensemble import RandomForestClassifier
+import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, accuracy_score
+import hashlib
 
-# ---------- DB Setup ----------
-conn = sqlite3.connect('users.db')
+# ------------------ DB SETUP ------------------
+conn = sqlite3.connect('aqua_users.db', check_same_thread=False)
 c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT, password TEXT)''')
 conn.commit()
 
-# ---------- User Auth ----------
-def register_user(username, password):
-    c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
-    conn.commit()
+# ------------------ SECURITY ------------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-def login_user(username, password):
-    c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
-    return c.fetchone()
+def verify_password(password, hashed):
+    return hash_password(password) == hashed
 
-# ---------- Model Trainer ----------
-@st.cache_data
+# ------------------ AUTH ------------------
+def login():
+    st.title("Login to Access Dashboard")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type='password')
+    
+    if st.button("Login"):
+        c.execute("SELECT password FROM users WHERE username=?", (username,))
+        result = c.fetchone()
+        if result and verify_password(password, result[0]):
+            st.session_state.logged_in = True
+            st.session_state.username = username
+            st.experimental_rerun()
+        else:
+            st.error("Invalid Username or Password")
+
+
+def register():
+    st.title("Register")
+    new_user = st.text_input("Choose Username")
+    new_pass = st.text_input("Choose Password", type='password')
+    if st.button("Register"):
+        c.execute("SELECT * FROM users WHERE username=?", (new_user,))
+        if c.fetchone():
+            st.error("Username already exists")
+        else:
+            hashed_pass = hash_password(new_pass)
+            c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_user, hashed_pass))
+            conn.commit()
+            st.success("Registered successfully! Please login.")
+
+# ------------------ MODEL TRAINING ------------------
 def train_models(farmer_df, water_df):
+    if 'LoanDefault' not in farmer_df.columns:
+        st.error("Uploaded Farmer Profiles CSV must contain column: 'LoanDefault'")
+        st.stop()
+    if 'Failure' not in water_df.columns:
+        st.error("Uploaded Water Quality CSV must contain column: 'Failure'")
+        st.stop()
+
     X1 = farmer_df.drop('LoanDefault', axis=1)
     y1 = farmer_df['LoanDefault']
     loan_model = RandomForestClassifier().fit(X1, y1)
@@ -35,126 +71,67 @@ def train_models(farmer_df, water_df):
 
     return loan_model, farm_model
 
-# ---------- Login UI ----------
-def show_login_popup():
-    with st.modal("Login to Access Dashboard"):
-        login_tab, register_tab = st.tabs(["🔐 Login", "📝 Register"])
-
-        with login_tab:
-            username = st.text_input("Username", key="login_user")
-            password = st.text_input("Password", type="password", key="login_pass")
-            if st.button("Login"):
-                user = login_user(username, password)
-                if user:
-                    st.session_state.logged_in = True
-                    st.session_state.user = username
-                    st.success("Login successful!")
-                    st.rerun()
-                else:
-                    st.error("Invalid Username or Password")
-
-        with register_tab:
-            new_user = st.text_input("Create Username", key="reg_user")
-            new_pass = st.text_input("Create Password", type="password", key="reg_pass")
-            if st.button("Register"):
-                if new_user and new_pass:
-                    try:
-                        register_user(new_user, new_pass)
-                        st.success("Registered! Please login.")
-                    except sqlite3.IntegrityError:
-                        st.error("Username already exists.")
-                else:
-                    st.warning("Fill both fields.")
-
-# ---------- Main Dashboard ----------
+# ------------------ MAIN APP ------------------
 def main():
-    st.set_page_config("Aqua Risk Intelligence", layout="wide")
-
-    if "logged_in" not in st.session_state:
+    st.set_page_config(layout="wide")
+    if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
+
+    menu = ["Login", "Register"]
+    choice = st.sidebar.selectbox("Menu", menu)
 
     if not st.session_state.logged_in:
-        show_login_popup()
+        if choice == "Login":
+            login()
+        else:
+            register()
         return
 
-    st.sidebar.title("🚪 Logout")
-    if st.sidebar.button("Logout"):
-        st.session_state.logged_in = False
-        st.rerun()
+    st.sidebar.success(f"Welcome {st.session_state.username}")
+    st.title("Aqua Risk Assessment Dashboard")
 
-    st.title("🐟 Aqua Risk Intelligence Dashboard")
-
-    # Upload Section
-    st.header("📤 Upload Datasets")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        farmer_file = st.file_uploader("Upload Farmer Profiles CSV", type="csv")
-    with col2:
-        water_file = st.file_uploader("Upload Water Quality CSV", type="csv")
+    farmer_file = st.file_uploader("Upload Farmer Profiles CSV", type=["csv"])
+    water_file = st.file_uploader("Upload Water Quality CSV", type=["csv"])
 
     if farmer_file is not None and water_file is not None:
         farmer_df = pd.read_csv(farmer_file)
         water_df = pd.read_csv(water_file)
-        st.success("✅ Files uploaded successfully.")
-    else:
-        st.warning("Using manual sample data. You can also upload your files above.")
-        farmer_df = pd.DataFrame({
-            'Age': [25, 30, 45], 'Experience': [5, 10, 20],
-            'LoanAmount': [100000, 150000, 200000], 'CreditScore': [650, 700, 620],
-            'LoanDefault': [0, 0, 1]
-        })
-        water_df = pd.DataFrame({
-            'Temperature': [25, 30, 35], 'pH': [7, 6.5, 8],
-            'Ammonia': [0.1, 0.3, 0.5], 'DO': [6.5, 5.2, 4.0],
-            'Failure': [0, 0, 1]
-        })
 
-    # Optional Manual Edits
-    with st.expander("✏️ Manually Edit Farmer Data"):
-        farmer_df = st.data_editor(farmer_df, num_rows="dynamic")
+        if 'LoanDefault' not in farmer_df.columns or 'Failure' not in water_df.columns:
+            st.error("Ensure Farmer CSV has 'LoanDefault' and Water CSV has 'Failure' column")
+            return
 
-    with st.expander("✏️ Manually Edit Water Quality Data"):
-        water_df = st.data_editor(water_df, num_rows="dynamic")
+        st.success("✅ Data uploaded successfully")
 
-    # Train Models
-    loan_model, farm_model = train_models(farmer_df, water_df)
+        loan_model, farm_model = train_models(farmer_df, water_df)
 
-    # Insights
-    st.header("📊 Risk Insights")
+        st.subheader("Loan Default Prediction")
+        with st.form("Loan Prediction"):
+            age = st.number_input("Age", 18, 70)
+            exp = st.number_input("Experience (years)", 0, 50)
+            amount = st.number_input("Loan Amount", 5000, 1000000)
+            credit = st.slider("Credit Score", 300, 900)
+            submit1 = st.form_submit_button("Predict Loan Risk")
+            if submit1:
+                result = loan_model.predict([[age, exp, amount, credit]])[0]
+                st.info("High Risk of Default" if result else "Low Risk")
 
-    with st.expander("🎯 Predict Loan Default for New Farmer"):
-        age = st.slider("Age", 18, 65, 30)
-        exp = st.slider("Experience", 0, 40, 5)
-        loan = st.number_input("Loan Amount", 50000, 500000, 100000)
-        credit = st.slider("Credit Score", 300, 900, 650)
-        input1 = pd.DataFrame([[age, exp, loan, credit]],
-                              columns=['Age', 'Experience', 'LoanAmount', 'CreditScore'])
-        pred1 = loan_model.predict(input1)[0]
-        st.info(f"Loan Default Risk: {'❌ High Risk' if pred1 else '✅ Low Risk'}")
+        st.subheader("Fish Farm Failure Prediction")
+        with st.form("Farm Prediction"):
+            temp = st.number_input("Water Temperature", 10.0, 40.0)
+            ph = st.slider("pH Level", 5.0, 9.0)
+            ammonia = st.number_input("Ammonia Level", 0.0, 10.0)
+            do = st.number_input("Dissolved Oxygen (DO)", 0.0, 15.0)
+            submit2 = st.form_submit_button("Predict Failure Risk")
+            if submit2:
+                result = farm_model.predict([[temp, ph, ammonia, do]])[0]
+                st.info("High Risk of Farm Failure" if result else "Stable Conditions")
 
-    with st.expander("🌊 Predict Farm Failure Based on Water Quality"):
-        temp = st.slider("Temperature (°C)", 15, 40, 25)
-        ph = st.slider("pH", 5.0, 9.0, 7.0)
-        ammonia = st.slider("Ammonia (mg/L)", 0.0, 1.0, 0.2)
-        do = st.slider("Dissolved Oxygen (mg/L)", 2.0, 10.0, 6.0)
-        input2 = pd.DataFrame([[temp, ph, ammonia, do]],
-                              columns=['Temperature', 'pH', 'Ammonia', 'DO'])
-        pred2 = farm_model.predict(input2)[0]
-        st.info(f"Farm Failure Risk: {'❌ High Risk' if pred2 else '✅ Low Risk'}")
-
-    # Reports
-    st.subheader("📈 Model Performance (on uploaded/manual data)")
-    st.text("Loan Default Model:")
-    X1 = farmer_df.drop('LoanDefault', axis=1)
-    y1 = farmer_df['LoanDefault']
-    st.code(classification_report(y1, loan_model.predict(X1)))
-
-    st.text("Farm Failure Model:")
-    X2 = water_df.drop('Failure', axis=1)
-    y2 = water_df['Failure']
-    st.code(classification_report(y2, farm_model.predict(X2)))
-
+        st.subheader("📊 Raw Data Preview")
+        st.write("Farmer Profiles Data")
+        st.dataframe(farmer_df.head())
+        st.write("Water Quality Data")
+        st.dataframe(water_df.head())
 
 if __name__ == '__main__':
     main()
