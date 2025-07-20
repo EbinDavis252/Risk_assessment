@@ -9,3 +9,4 @@ sqlalchemy
 bcrypt
 joblib
 shap
+bcrypt
